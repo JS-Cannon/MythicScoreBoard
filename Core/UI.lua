@@ -87,6 +87,15 @@ local function GetRole(p)
     return "DAMAGER"
 end
 
+-- Returns the spec's icon texture, or nil if the spec hasn't been resolved yet.
+local function GetSpecIcon(specID)
+    if not specID or specID == 0 or not GetSpecializationInfoByID then
+        return nil
+    end
+    local _, _, _, icon = GetSpecializationInfoByID(specID)
+    return icon
+end
+
 local FRAME_W = 1130
 local ROW_H = 50
 local HDR_H = 95
@@ -292,22 +301,38 @@ local function MakeScrollFrame(parent, x1, y1, x2, y2)
     sb:SetScript("OnLeave", function() end)
 
     local content = CreateFrame("Frame", nil, sf)
-    content:SetWidth(FRAME_W - 12)
-    content:SetHeight(1)
-    sf:SetScrollChild(content)
+        content:SetWidth(FRAME_W - 12)
+        content:SetHeight(1)
+        sf:SetScrollChild(content)
 
-    sf:SetScript("OnMouseWheel", function(_, delta)
-        local cur = sb:GetValue()
+        sf:SetScript("OnMouseWheel", function(_, delta)
         local mn, mx = sb:GetMinMaxValues()
-        sb:SetValue(_max(mn, _min(mx, cur - delta * ROW_H * 2)))
+        -- Solo permite hacer scroll si la diferencia real es significativa (más de 5px)
+        if mx > 5 then
+            local cur = sb:GetValue()
+            sb:SetValue(_max(mn, _min(mx, cur - delta * ROW_H * 2)))
+        end
     end)
-    sb:SetScript("OnValueChanged",
-                 function(_, val) sf:SetVerticalScroll(val) end)
+
+    sb:SetScript("OnValueChanged", function(_, val)
+        sf:SetVerticalScroll(val)
+    end)
+
     local function UpdateRange()
-        local maxS = _max(0, content:GetHeight() - sf:GetHeight())
+        local overflow = content:GetHeight() - sf:GetHeight()
+
+        -- Si el sobrante es de 5px o menos, ignoramos el desbordamiento por completo
+        local maxS = overflow > 5 and overflow or 0
+
         sb:SetMinMaxValues(0, maxS)
         if sb:GetValue() > maxS then sb:SetValue(maxS) end
         sb:SetShown(maxS > 0)
+
+        -- Si no hay scroll suficiente, resetea la posición a 0 para que no quede atascado
+        if maxS == 0 then
+            sf:SetVerticalScroll(0)
+            sb:SetValue(0)
+        end
     end
     content:SetScript("OnSizeChanged", UpdateRange)
 
@@ -2927,12 +2952,38 @@ local function AcquireRow(parent)
     -- Role icon
     local roleIcon = row:CreateTexture(nil, "ARTWORK")
     roleIcon:SetSize(16, 16)
-    roleIcon:SetPoint("BOTTOMLEFT", classIcon, "BOTTOMRIGHT", 2, 0)
+    roleIcon:SetPoint("BOTTOMLEFT", classIcon, "BOTTOMRIGHT", -9, -5)
+    roleIcon:SetDrawLayer("OVERLAY")
     row._roleIcon = roleIcon
+
+    -- Specialization icon
+    local specIcon = row:CreateTexture(nil, "ARTWORK")
+    specIcon:SetSize(20, 20)
+    specIcon:SetPoint("RIGHT", classIcon, "RIGHT", 34, 0)
+    row._specIcon = specIcon
+
+    local specBtn = CreateFrame("Button", nil, row)
+    specBtn:SetAllPoints(specIcon)
+
+    specBtn:SetScript("OnEnter", function(self)
+        local p = self:GetParent()._player
+        if not p then return end
+
+        local _, specName, _, iconTexture = GetSpecializationInfoByID(p.specID)
+        if not specName or specName == "" then return end
+
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(specName, 1, 1, 1)
+        GameTooltip:Show()
+    end)
+
+    specBtn:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
 
     -- Player name + sub-label (item level)
     local iconTotalW = ICON_SIZE + 2 + 16 + 4
-    local nameX = 8 + iconTotalW
+    local nameX = 24 + iconTotalW
     local nameW = COLS[1].w - iconTotalW - 4
 
     local nameFs = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -3514,7 +3565,6 @@ function MS:_DoRefreshOverview()
         local cc = CLASS_ICON_COORDS[p.class] or CLASS_ICON_COORDS["UNKNOWN"]
         row._classIcon:SetTexCoord(cc[1], cc[2], cc[3], cc[4])
 
-        -- Role icon
         local role = GetRole(p)
         row._roleIcon:SetTexture(ROLE_ICON_TEX)
         row._roleIcon:Show()
@@ -3523,6 +3573,22 @@ function MS:_DoRefreshOverview()
         else
             local rc = ROLE_ICON_COORDS[role] or ROLE_ICON_COORDS["DAMAGER"]
             row._roleIcon:SetTexCoord(rc[1], rc[2], rc[3], rc[4])
+        end
+
+        local specIcon = GetSpecIcon(p.specID)
+        --row._specIcon:SetTexture(ROLE_ICON_TEX)
+        row._specIcon:Show()
+        if specIcon then
+            row._specIcon:SetTexture(specIcon)
+            row._specIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        else
+            row._specIcon:SetTexture(ROLE_ICON_TEX)
+            if GetTexCoordsForRoleSmallCircle then
+                row._specIcon:SetTexCoord(GetTexCoordsForRoleSmallCircle(role))
+            else
+                local rc = ROLE_ICON_COORDS[role] or ROLE_ICON_COORDS["DAMAGER"]
+                row._specIcon:SetTexCoord(rc[1], rc[2], rc[3], rc[4])
+            end
         end
 
         -- Player name

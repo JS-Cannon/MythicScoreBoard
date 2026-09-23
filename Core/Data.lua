@@ -135,6 +135,7 @@ local function NewPlayerStats(name, classToken, guid)
         mythicScore          = 0,
         itemLevel            = 0,
         deathRecapID         = 0,
+        specID               = nil,
     }
 end
 
@@ -666,10 +667,20 @@ local function EnsureInspectFrame()
                 if MS.currentRun and MS.currentRun.players[name] then
                     MS.currentRun.players[name].itemLevel = il
                 end
-                if MS.RefreshOverview and MS.sbFrameVisible and MS.sbFrameVisible() then
-                    MS:RefreshOverview()
+            end
+        end
+        if targetUnit and GetInspectSpecialization then
+            local specID = GetInspectSpecialization(targetUnit)
+            if specID and specID > 0 then
+                MS.specCache = MS.specCache or {}
+                MS.specCache[name] = specID
+                if MS.currentRun and MS.currentRun.players[name] then
+                    MS.currentRun.players[name].specID = specID
                 end
             end
+        end
+        if MS.RefreshOverview and MS.sbFrameVisible and MS.sbFrameVisible() then
+            MS:RefreshOverview()
         end
         ClearInspectPlayer()
         if #inspectQueue > 0 then
@@ -719,6 +730,17 @@ function MS:PopulateRolesAndScores()
             if p then
                 local role = UnitGroupRolesAssigned and UnitGroupRolesAssigned(unit)
                 if role and role ~= "" and role ~= "NONE" then p.role = role end
+                if unit == "player" and GetSpecialization and GetSpecializationInfo then
+                    local specIndex = GetSpecialization()
+                    if specIndex then
+                        local specID = GetSpecializationInfo(specIndex)
+                        if specID then
+                            p.specID = specID
+                            self.specCache = self.specCache or {}
+                            self.specCache[short] = specID
+                        end
+                    end
+                end
                 local sc = C_PlayerInfo and C_PlayerInfo.GetPlayerMythicPlusRatingSummary
                     and C_PlayerInfo.GetPlayerMythicPlusRatingSummary(unit)
                 if sc and sc.currentSeasonScore and sc.currentSeasonScore > 0 then
@@ -743,6 +765,7 @@ end
 function MS:PopulateAll()
     if not self.currentRun then return end
     self.itemLevelCache = self.itemLevelCache or {}
+    self.specCache = self.specCache or {}
     local needsInspect = false
     for _, unit in ipairs(self:GroupUnits()) do
         local uname = UnitName(unit)
@@ -750,10 +773,16 @@ function MS:PopulateAll()
             local short = ShortName(uname)
             local p     = self.currentRun.players[short]
             if p then
+                local cachedSpec = self.specCache[short]
+                if cachedSpec and not p.specID then p.specID = cachedSpec end
+
                 local cached = self.itemLevelCache[short]
                 if cached and cached > 0 then
                     p.itemLevel = cached
-                elseif not inspectPending then
+                end
+
+                if unit ~= "player" and ((not cached or cached == 0) or not p.specID)
+                        and not inspectPending then
                     local already = false
                     for _, e in ipairs(inspectQueue) do
                         if e.name == short then already = true; break end
