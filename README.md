@@ -1,2 +1,5 @@
 # mythicscoreboard
-MythicScoreBoard Addon for World of Warcraft -rework
+Mythic ScoreBoard Addon for World of Warcraft (refork)
+
+Original addon by Continually:
+https://www.curseforge.com/wow/addons/mythic-scoreboard
