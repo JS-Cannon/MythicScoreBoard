@@ -1,0 +1,3 @@
+-- LibStub is a simple versioning stub meant for use in Libraries.
+-- It is not needed here but included for potential future library use.
+-- This is a minimal stub - no external library dependencies are required.

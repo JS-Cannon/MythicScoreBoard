@@ -1,0 +1,19 @@
+## Interface: 120100
+## Interface-Retail: 120100
+## Title: Mythic Scoreboard
+## Author: Continually
+## Version: 1.2
+## Notes: Dungeon run scoreboard for Midnight (WoW 12.x). Tracks DPS, HPS, deaths, interrupts, dispels, and a boss timeline.
+## IconTexture: Interface\AddOns\MythicScoreboard\Icons\Icon
+## SavedVariablesPerCharacter: MythicScoreboardDB
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+MythicScoreboard.lua
+Core\Data.lua
+Core\Events.lua
+Core\MobForces.lua
+Core\UI.lua
