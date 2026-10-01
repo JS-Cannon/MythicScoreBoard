@@ -379,10 +379,13 @@ local function BuildHistDropdownRows(drop, runs, anchorBtn)
     local rowH = 26
     local maxVisible = 12
     local visRows = _min(#runs, maxVisible)
-    local colW = {24, 140, 36, 50, 80}
+    local colW = { 22, 140, 32, 42, 85, 60 }
     local DEL_W = 22
-    local dropW = 8 + colW[1] + colW[2] + colW[3] + colW[4] + colW[5] + DEL_W +
-                      8
+    local dropW = 8 -- Left offset
+    for _, w in ipairs(colW) do
+        dropW = dropW + w
+    end
+    dropW = dropW + DEL_W + 8 -- Include delete button width
 
     drop:SetSize(dropW, visRows * rowH + rowH + 3) -- +rowH for the Clear All row
 
@@ -443,6 +446,9 @@ local function BuildHistDropdownRows(drop, runs, anchorBtn)
             diffR, diffG, diffB = C.stat[1], C.stat[2], C.stat[3]
         end
 
+        local classToken = run.myClass or "UNKNOWN"
+        local cr, cg, cb = ClassColor(classToken)
+
         local rowCols = {
             {
                 text = tostring(idx),
@@ -456,14 +462,21 @@ local function BuildHistDropdownRows(drop, runs, anchorBtn)
                 g = C.white[2],
                 b = C.white[3],
                 j = "LEFT"
-            }, {text = diffText, r = diffR, g = diffG, b = diffB, j = "CENTER"},
+            },
+            { text = diffText, r = diffR, g = diffG, b = diffB, j = "CENTER" },
             {
                 text = MS:FormatTime(dur),
                 r = C.stat[1],
                 g = C.stat[2],
                 b = C.stat[3],
                 j = "CENTER"
-            }, {text = result, r = rr, g = rg, b = rb2, j = "LEFT"}
+            },
+            {
+                text = run.myPlayer or "Unknown",
+                r = cr, g = cg, b = cb,
+                j = "RIGHT"
+            },
+            { text = result, r = rr, g = rg, b = rb2, j = "RIGHT" } -- Changed 'j' to "RIGHT" for cleaner alignment
         }
         local rx = 8
         for ci, rc in ipairs(rowCols) do
@@ -869,11 +882,13 @@ local function BuildTimeline(strip, run, totalDur, rebuildFn)
     barTrack:SetPoint("BOTTOMLEFT", strip, "BOTTOMLEFT", TL_MARGIN, BAR_Y - 1)
     barTrack:SetPoint("BOTTOMRIGHT", strip, "BOTTOMRIGHT", -TL_MARGIN, BAR_Y - 1)
     barTrack:SetColorTexture(0.03, 0.04, 0.07, 1)
+
     local barShadTop = strip:CreateTexture(nil, "BORDER")
     barShadTop:SetHeight(2)
     barShadTop:SetPoint("TOPLEFT", barTrack, "TOPLEFT", 0, 0)
     barShadTop:SetPoint("TOPRIGHT", barTrack, "TOPRIGHT", 0, 0)
     barShadTop:SetColorTexture(0, 0, 0, 0.55)
+
     -- Faint bottom-rim glow
     local barGlowBot = strip:CreateTexture(nil, "BORDER")
     barGlowBot:SetHeight(1)
@@ -2226,36 +2241,51 @@ function MS:BuildUI()
         end
     end
 
-    local histBtn = MakeHeaderBtn(hdr, 320, 26)
+    local histBtn = MakeHeaderBtn(hdr, 393, 26)
     histBtn:SetPoint("TOPLEFT", hdr, "TOPLEFT", 6, -6)
 
     -- Inner font strings for the inline run preview.
-    -- Index anchored left, result/time/level anchored from the right,
+    -- Index anchored left, result/player/time/level anchored from the right,
     -- dungeon name fills the space between — no fixed-width gaps.
+
+    --local colW = { 22, 140, 32, 42, 85, 60 }
+
+    -- 1. Index (Far Left)
     local hbIndex = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     hbIndex:SetPoint("LEFT", histBtn, "LEFT", 8, 0)
-    hbIndex:SetSize(18, 26)
+    hbIndex:SetSize(22, 26)
     hbIndex:SetJustifyH("CENTER")
     hbIndex:SetFont(_FONT_PATH, 11, "")
 
+    -- 2. Result (Far Right)
     local hbResult = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     hbResult:SetPoint("RIGHT", histBtn, "RIGHT", -8, 0)
-    hbResult:SetSize(72, 26)
+    hbResult:SetSize(55, 26)
     hbResult:SetJustifyH("RIGHT")
     hbResult:SetFont(_FONT_PATH, 11, "")
 
+    -- 3. Player Name (To the LEFT of Result)
+    local hbPlayer = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    hbPlayer:SetPoint("RIGHT", hbResult, "LEFT", -6, 0)
+    hbPlayer:SetSize(80, 26)
+    hbPlayer:SetJustifyH("RIGHT")
+    hbPlayer:SetFont(_FONT_PATH, 11, "")
+
+    -- 4. Time (To the LEFT of Player)
     local hbTime = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    hbTime:SetPoint("RIGHT", hbResult, "LEFT", -6, 0)
-    hbTime:SetSize(40, 26)
+    hbTime:SetPoint("RIGHT", hbPlayer, "LEFT", -6, 0)
+    hbTime:SetSize(37, 26)
     hbTime:SetJustifyH("RIGHT")
     hbTime:SetFont(_FONT_PATH, 11, "")
 
+    -- 5. Level (To the LEFT of Time)
     local hbLevel = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    hbLevel:SetPoint("RIGHT", hbTime, "LEFT", -6, 0)
-    hbLevel:SetSize(28, 26)
+    hbLevel:SetPoint("RIGHT", hbTime, "LEFT", -4, 0)
+    hbLevel:SetSize(32, 26)
     hbLevel:SetJustifyH("RIGHT")
     hbLevel:SetFont(_FONT_PATH, 11, "")
 
+    -- 6. Dungeon Name (Fills remaining space between hbIndex and hbLevel)
     local hbDungeon = histBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     hbDungeon:SetPoint("LEFT", hbIndex, "RIGHT", 6, 0)
     hbDungeon:SetPoint("RIGHT", hbLevel, "LEFT", -6, 0)
@@ -2327,6 +2357,10 @@ function MS:BuildUI()
             end
             hbResult:SetText(result)
             hbResult:SetTextColor(rr, rg, rb)
+
+            local classToken = r.myClass or "UNKNOWN"
+            hbPlayer:SetText(r.myPlayer or "")
+            hbPlayer:SetTextColor(ClassColor(classToken))
         else
             hbTxt:Show()
             hbIndex:SetText("")
@@ -2334,6 +2368,7 @@ function MS:BuildUI()
             hbLevel:SetText("")
             hbTime:SetText("")
             hbResult:SetText("")
+            hbPlayer:SetText("")
         end
     end
 
@@ -3047,10 +3082,14 @@ local function AcquireRow(parent)
 
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 
-        -- 1. Display full Blizzard Tooltip if we have a hyperlink with scaling Bonus IDs
-        if p.lootItemLink and HasBonusIDs(p.lootItemLink) then
-            local ok = pcall(GameTooltip.SetHyperlink, GameTooltip,
-                             p.lootItemLink)
+        -- Display the real Blizzard tooltip whenever we have a valid loot hyperlink.
+        if p.lootItemLink then
+            local ok = pcall(
+                GameTooltip.SetHyperlink,
+                GameTooltip,
+                p.lootItemLink
+            )
+
             if ok and GameTooltip:NumLines() > 0 then
                 GameTooltip:Show()
                 return
@@ -3071,8 +3110,7 @@ local function AcquireRow(parent)
         GameTooltip:SetText(name, r, g, b)
 
         if p.lootItemLevel and p.lootItemLevel > 0 then
-            GameTooltip:AddLine("Item Level: " .. tostring(p.lootItemLevel), 0.8,
-                                0.8, 0.8)
+            GameTooltip:AddLine("Item Level: " .. tostring(p.lootItemLevel), 0.8, 0.8, 0.8)
         end
 
         GameTooltip:AddLine("Mythic+ Dungeon Drop", 0.7, 0.7, 0.7)

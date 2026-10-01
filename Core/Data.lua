@@ -104,6 +104,8 @@ local function NewRunData()
         completed            = false,
         inTime               = false,
         affixes              = {},
+        myPlayer             = "",
+        myClass              = "",
         players              = {},
         bosses               = {},
         activeBoss           = nil,
@@ -767,6 +769,23 @@ function MS:PopulateAll()
     self.itemLevelCache = self.itemLevelCache or {}
     self.specCache = self.specCache or {}
     local needsInspect = false
+
+    -- Yourself
+    local _, myEquippedILvl = GetAverageItemLevel()
+    myEquippedILvl = math.floor(myEquippedILvl or 0)
+
+    if myEquippedILvl > 0 then
+        local myName = ShortName(UnitName("player") or "")
+        if myName ~= "" then
+            -- Updates local cache and actual run data
+            self.itemLevelCache[myName] = myEquippedILvl
+            if self.currentRun.players and self.currentRun.players[myName] then
+                self.currentRun.players[myName].itemLevel = myEquippedILvl
+            end
+        end
+    end
+
+    -- Rest of the group
     for _, unit in ipairs(self:GroupUnits()) do
         local uname = UnitName(unit)
         if uname then
@@ -810,6 +829,8 @@ function MS:StartRun(dungeonName, keystoneLevel, difficultyID, difficultyLabel)
     self.currentRun.keystoneLevel   = keystoneLevel or 0
     self.currentRun.difficultyID    = difficultyID or 0
     self.currentRun.difficultyLabel = difficultyLabel or ""
+    self.currentRun.myPlayer        = UnitName("player")
+    self.currentRun.myClass         = select(2, UnitClass("player")) or "UNKNOWN"
     self.currentRun.startTime       = GetTime()
     if C_ChallengeMode and C_ChallengeMode.GetActiveChallengeMapID then
         self.currentRun.challengeMapID = C_ChallengeMode.GetActiveChallengeMapID()

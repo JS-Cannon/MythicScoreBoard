@@ -473,6 +473,68 @@ local function SyncRoster()
     end
 end
 
+local function GetQualityFromItemLink(itemLink)
+    if type(itemLink) ~= "string" then
+        return nil
+    end
+
+    local hex = itemLink:match("|c(%x%x%x%x%x%x%x%x)|Hitem:")
+    if not hex then
+        return nil
+    end
+
+    local r = tonumber(hex:sub(3, 4), 16) / 255
+    local g = tonumber(hex:sub(5, 6), 16) / 255
+    local b = tonumber(hex:sub(7, 8), 16) / 255
+
+    for quality = 0, 7 do
+        local qr, qg, qb = GetItemQualityColor(quality)
+
+        if math.abs(r - qr) < 0.01
+            and math.abs(g - qg) < 0.01
+            and math.abs(b - qb) < 0.01
+        then
+            return quality
+        end
+    end
+
+    return nil
+end
+
+local function IsEligibleLoot(itemLink)
+    if not itemLink then
+        return false
+    end
+
+    -- Only weapons and armor.
+    local _, _, _, _, _, classID =
+        C_Item.GetItemInfoInstant(itemLink)
+
+    if classID ~= Enum.ItemClass.Weapon
+        and classID ~= Enum.ItemClass.Armor
+    then
+        return false
+    end
+
+    -- Get item binding information.
+    local _, _, _, _, _, _, _, _, _, _, _, _, bindType =
+        C_Item.GetItemInfo(itemLink)
+
+    -- 2 = Bind on Equip.
+    if bindType == 2 then
+        return false
+    end
+
+    -- Exclude Warbound / account-bound-until-equipped.
+    if C_Item.IsItemBindToAccountUntilEquip
+        and C_Item.IsItemBindToAccountUntilEquip(itemLink)
+    then
+        return false
+    end
+
+    return true
+end
+
 local frame = CreateFrame("Frame")
 
 -- Bonus IDs (upgrade track, etc.) live in the item string's 13th segment.
@@ -485,44 +547,81 @@ local function LootLinkHasBonusIDs(link)
     return numBonus and numBonus > 0
 end
 
-local function ApplyLootToPlayer(targetRun, name, itemName, itemLink, itemTexture, isConfirmedLink, qualityColor)
+local function ApplyLootToPlayer(targetRun, name, itemName, itemLink, itemTexture, isConfirmedLink, quality, qualityColor)
     local p = targetRun.players[name]
     if not p then return end
 
-    local newItemID = itemLink and tonumber(itemLink:match("item:(%d+)"))
-    -- A weaker duplicate report for the same drop (e.g. ENCOUNTER_LOOT_RECEIVED's
-    -- bonus-ID-less link arriving after CHAT_MSG_LOOT's full link) must not
-    -- clobber the already-resolved, correctly colored/leveled link.
-    if newItemID and p.lootItemID == newItemID and p.lootItemLink
-            and LootLinkHasBonusIDs(p.lootItemLink) and not LootLinkHasBonusIDs(itemLink) then
+    -- A real hyperlink from the encounter/chat event is authoritative.
+    -- Never let a name-only lookup overwrite it.
+    if p.lootLinkConfirmed and not isConfirmedLink then
         return
     end
 
-    p.lootItemName      = itemName
-    p.lootLinkConfirmed = isConfirmedLink and true or false
-    if itemTexture then p.lootIcon = itemTexture end
+    local newItemID = itemLink and tonumber(itemLink:match("item:(%d+)"))
 
-    -- Store the loot's own item level separately -- p.itemLevel is the player's
-    -- own gear item level (from inspect) and must never be overwritten here.
+    -- Don't replace a full M+ link with a weaker link for the same item.
+    if newItemID
+        and p.lootItemID == newItemID
+        and p.lootItemLink
+        and LootLinkHasBonusIDs(p.lootItemLink)
+        and not LootLinkHasBonusIDs(itemLink)
+    then
+        return
+    end
+
+    if itemName then
+        p.lootItemName = itemName
+    end
+
     if itemLink then
-        p.lootItemLink  = itemLink
-        p.lootItemID    = newItemID or p.lootItemID
-        p.lootItemLevel = C_Item.GetDetailedItemLevelInfo(itemLink) or p.lootItemLevel
+        p.lootItemLink = itemLink
+        p.lootItemID = newItemID or p.lootItemID
+        p.lootLinkConfirmed = isConfirmedLink and true or p.lootLinkConfirmed
+
+        -- The itemLink itself is the authoritative loot data.
+        p.lootQuality = GetQualityFromItemLink(itemLink)
+
+        if C_Item.GetDetailedItemLevelInfo then
+            p.lootItemLevel =
+                C_Item.GetDetailedItemLevelInfo(itemLink)
+                or p.lootItemLevel
+        end
     end
 
-    -- Keep qualityColor available as a fallback for plain-text chat broadcasts.
-    if qualityColor then
+    if itemTexture then
+        p.lootIcon = itemTexture
+    elseif newItemID and C_Item.GetItemIconByID then
+        p.lootIcon = C_Item.GetItemIconByID(newItemID)
+    end
+
+    -- Only use the old quality fallback when we don't have
+    -- a quality encoded in the authoritative link.
+    if p.lootQuality == nil and quality ~= nil then
+        p.lootQuality = quality
+
+        local r, g, b = GetItemQualityColor(quality)
+        p.lootQualityColor = { r, g, b }
+    elseif p.lootQuality == nil and qualityColor then
         p.lootQualityColor = qualityColor
+    elseif p.lootQuality ~= nil then
+        local r, g, b = GetItemQualityColor(p.lootQuality)
+        p.lootQualityColor = { r, g, b }
     end
 
-    if MS._awaitingLootAutoShow and MythicScoreboardDB and MythicScoreboardDB.runs
-            and targetRun == MythicScoreboardDB.runs[1] then
+    if MS._awaitingLootAutoShow
+        and MythicScoreboardDB
+        and MythicScoreboardDB.runs
+        and targetRun == MythicScoreboardDB.runs[1]
+    then
         MS._awaitingLootAutoShow = nil
-        C_Timer.After(0.1, function() MS:ShowScoreboard() end)
+
+        C_Timer.After(0.1, function()
+            MS:ShowScoreboard()
+        end)
     end
 
-    -- Mark scoreboard rows dirty so RefreshOverview actually rebuilds them.
     targetRun._seq = (targetRun._seq or 0) + 1
+
     if MS.sbFrameVisible and MS.sbFrameVisible() then
         MS:RefreshOverview()
     end
@@ -536,30 +635,60 @@ local function TryResolveLoot(targetRun, name, itemQuery, itemNameFallback, isCo
     attempt = attempt or 1
 
     local _, _, _, _, _, classID = C_Item.GetItemInfoInstant(itemQuery)
-    if classID ~= nil and classID ~= Enum.ItemClass.Weapon and classID ~= Enum.ItemClass.Armor then
+
+    if classID ~= nil
+        and classID ~= Enum.ItemClass.Weapon
+        and classID ~= Enum.ItemClass.Armor
+    then
         return
     end
 
-    local iName, iLink, iQuality, _, _, _, _, _, iEquipLoc, iTexture = C_Item.GetItemInfo(itemQuery)
-    if not (classID ~= nil and iTexture) then
+    local iName, iLink, iQuality, _, _, _, _, _, iEquipLoc, iTexture =
+        C_Item.GetItemInfo(itemQuery)
+
+    if not iName or not iLink then
         if attempt < 8 then
             C_Timer.After(0.4, function()
-                TryResolveLoot(targetRun, name, itemQuery, itemNameFallback, isConfirmedLink, qualityColor, attempt + 1)
+                TryResolveLoot(
+                    targetRun,
+                    name,
+                    itemQuery,
+                    itemNameFallback,
+                    isConfirmedLink,
+                    qualityColor,
+                    attempt + 1
+                )
             end)
         end
+
         return
     end
 
-    if not iEquipLoc or iEquipLoc == "" then return end
-    if C_Item.IsItemBindToAccountUntilEquip and C_Item.IsItemBindToAccountUntilEquip(iLink or itemQuery) then
+    if not iEquipLoc or iEquipLoc == "" then
         return
     end
 
-    -- Prioritize itemQuery if it's already a confirmed chat link to preserve M+ bonus IDs
-    local finalLink = (isConfirmedLink and itemQuery) or iLink
-    local finalIsConfirmed = isConfirmedLink or (iLink ~= nil)
+    if C_Item.IsItemBindToAccountUntilEquip
+        and C_Item.IsItemBindToAccountUntilEquip(iLink or itemQuery)
+    then
+        return
+    end
 
-    ApplyLootToPlayer(targetRun, name, iName or itemNameFallback, finalLink, iTexture, finalIsConfirmed, qualityColor)
+    -- IMPORTANT:
+    -- If the original event supplied a real hyperlink, keep THAT EXACT LINK.
+    -- Otherwise this is only a fallback resolution.
+    local finalLink = isConfirmedLink and itemQuery or iLink
+
+    ApplyLootToPlayer(
+        targetRun,
+        name,
+        iName or itemNameFallback,
+        finalLink,
+        iTexture,
+        isConfirmedLink,
+        iQuality,
+        qualityColor
+    )
 end
 
 -- Loot can only be attributed to a just-finished run for a grace period after
@@ -581,6 +710,118 @@ local function GetLootTargetRun()
         end
     end
     if targetRun and targetRun.players then return targetRun end
+    return nil
+end
+
+MS.pendingLoot = MS.pendingLoot or {}
+
+local function NormalizeLootName(name)
+    if not name then return nil end
+
+    name = name:gsub("|c%x%x%x%x%x%x%x%x", "")
+    name = name:gsub("|r", "")
+    name = name:gsub("^%s+", "")
+    name = name:gsub("%s+$", "")
+
+    return name
+end
+
+local function CleanupPendingLoot()
+    if not MS.pendingLoot then return end
+
+    local now = GetTime()
+
+    for i = #MS.pendingLoot, 1, -1 do
+        if now - MS.pendingLoot[i].time > 3 then
+            table.remove(MS.pendingLoot, i)
+        end
+    end
+end
+
+local function AddPendingChatLoot(targetRun, playerName, itemName, itemLink, qualityColor)
+    if not targetRun or not playerName or not itemName then
+        return
+    end
+
+    CleanupPendingLoot()
+
+    table.insert(MS.pendingLoot, {
+        source = "CHAT",
+        targetRun = targetRun,
+        playerName = playerName,
+        itemName = itemName,
+        itemLink = itemLink,
+        qualityColor = qualityColor,
+        time = GetTime(),
+    })
+end
+
+local function AddPendingEncounterLoot(targetRun, itemID, itemLink, itemName)
+    if not targetRun or not itemID then
+        return
+    end
+
+    CleanupPendingLoot()
+
+    table.insert(MS.pendingLoot, {
+        source = "ENCOUNTER",
+        targetRun = targetRun,
+        itemID = itemID,
+        itemLink = itemLink,
+        itemName = itemName,
+        time = GetTime(),
+    })
+end
+
+local function FindPendingChatLoot(targetRun, itemName, playerName)
+    if not MS.pendingLoot or not itemName then
+        return nil
+    end
+
+    CleanupPendingLoot()
+
+    local wantedItem = NormalizeLootName(itemName)
+    local wantedPlayer = playerName and MS.ShortName(playerName)
+
+    for i = #MS.pendingLoot, 1, -1 do
+        local pending = MS.pendingLoot[i]
+
+        if pending.source == "CHAT"
+            and pending.targetRun == targetRun
+            and NormalizeLootName(pending.itemName) == wantedItem
+        then
+            if not wantedPlayer or pending.playerName == wantedPlayer then
+                table.remove(MS.pendingLoot, i)
+                return pending
+            end
+        end
+    end
+
+    return nil
+end
+
+local function FindPendingEncounterLoot(targetRun, itemName)
+    if not MS.pendingLoot or not itemName then
+        return nil
+    end
+
+    CleanupPendingLoot()
+
+    local wantedItem = NormalizeLootName(itemName)
+
+    for i = #MS.pendingLoot, 1, -1 do
+        local pending = MS.pendingLoot[i]
+
+        if pending.source == "ENCOUNTER"
+            and pending.targetRun == targetRun
+            and pending.itemName
+            and NormalizeLootName(pending.itemName) == wantedItem
+        then
+            table.remove(MS.pendingLoot, i)
+            return pending
+        end
+    end
+
     return nil
 end
 
@@ -1006,144 +1247,474 @@ frame:SetScript("OnEvent", function(_, event, ...)
         C_Timer.After(1.5, function() MS:RebuildPetGUIDCache() end)
 
     elseif event == "ENCOUNTER_LOOT_RECEIVED" then
-        -- Gives a guaranteed real itemLink for every party member's loot,
-        -- unlike CHAT_MSG_LOOT which often only has bracketed item text.
         local _, itemID, itemLink, _, playerName = ...
-        if not (itemID and playerName) then return end
+
+        if not itemID then
+            return
+        end
+
         local targetRun = GetLootTargetRun()
-        if not targetRun then return end
-        local name = MS.ShortName(playerName)
-        if not targetRun.players[name] then return end
-        -- itemLink can be nil (own loot in particular); only treat it as a
-        -- confirmed link when it's actually present, not the bare itemID.
-        TryResolveLoot(targetRun, name, itemLink or itemID, nil, itemLink ~= nil, nil)
+        if not targetRun then
+            return
+        end
+
+        ----------------------------------------------------------------
+        -- Resolve the item name only for correlation / display.
+        -- The itemLink itself remains authoritative.
+        ----------------------------------------------------------------
+
+        local itemName
+
+        if itemLink then
+            itemName = C_Item.GetItemInfo(itemLink)
+        end
+
+        if not itemName then
+            itemName = C_Item.GetItemInfo(itemID)
+        end
+
+        ----------------------------------------------------------------
+        -- CASE 1:
+        -- ENCOUNTER_LOOT_RECEIVED gives us a real player name.
+        ----------------------------------------------------------------
+
+        if playerName
+            and playerName ~= ""
+            and playerName ~= "Unknown"
+        then
+            local name = MS.ShortName(playerName)
+
+            if targetRun.players[name] then
+
+                if itemName then
+                    FindPendingChatLoot(
+                        targetRun,
+                        itemName,
+                        name
+                    )
+                end
+
+                --------------------------------------------------------
+                -- IMPORTANT:
+                -- Store the authoritative encounter hyperlink directly.
+                -- Do NOT send it through TryResolveLoot().
+                --------------------------------------------------------
+
+                if itemLink then
+                    if not IsEligibleLoot(itemID, itemLink) then
+                        return
+                    end
+
+                    ApplyLootToPlayer(
+                        targetRun,
+                        name,
+                        itemName,
+                        itemLink,
+                        C_Item.GetItemIconByID
+                            and C_Item.GetItemIconByID(itemID),
+                        true,
+                        nil,
+                        nil
+                    )
+                end
+
+                return
+            end
+
+            return
+        end
+
+        ----------------------------------------------------------------
+        -- CASE 2:
+        -- ENCOUNTER_LOOT_RECEIVED says "Unknown".
+        --
+        -- CHAT_MSG_LOOT knows who received the item, so correlate using
+        -- the item name.
+        ----------------------------------------------------------------
+
+        if itemName then
+            local pending =
+                FindPendingChatLoot(
+                    targetRun,
+                    itemName
+                )
+
+            if pending then
+                local name = pending.playerName
+
+                if name and targetRun.players[name] then
+
+                    ----------------------------------------------------
+                    -- The encounter hyperlink wins.
+                    ----------------------------------------------------
+
+                    if itemLink then
+                        ApplyLootToPlayer(
+                            targetRun,
+                            name,
+                            itemName,
+                            itemLink,
+                            C_Item.GetItemIconByID
+                                and C_Item.GetItemIconByID(itemID),
+                            true,
+                            nil,
+                            pending.qualityColor
+                        )
+                    end
+
+                    return
+                end
+            end
+        end
+
+        ----------------------------------------------------------------
+        -- CASE 3:
+        -- Encounter arrived before CHAT, or item name isn't cached yet.
+        ----------------------------------------------------------------
+
+        AddPendingEncounterLoot(
+            targetRun,
+            itemID,
+            itemLink,
+            itemName
+        )
+
+        ----------------------------------------------------------------
+        -- If we have an itemLink but no item name yet, give the client
+        -- a little time to populate it.
+        ----------------------------------------------------------------
+
+        if itemLink and not itemName then
+
+            local function RetryEncounterName(attempt)
+                local resolvedName =
+                    C_Item.GetItemInfo(itemLink)
+
+                if resolvedName then
+
+                    local pending =
+                        FindPendingChatLoot(
+                            targetRun,
+                            resolvedName
+                        )
+
+                    if pending then
+                        local name = pending.playerName
+
+                        if name and targetRun.players[name] then
+
+                            FindPendingEncounterLoot(
+                                targetRun,
+                                resolvedName
+                            )
+
+                            ApplyLootToPlayer(
+                                targetRun,
+                                name,
+                                resolvedName,
+                                itemLink,
+                                C_Item.GetItemIconByID
+                                    and C_Item.GetItemIconByID(itemID),
+                                true,
+                                nil,
+                                pending.qualityColor
+                            )
+                        end
+
+                        return
+                    end
+
+                    ----------------------------------------------------
+                    -- Update the pending encounter record with its name.
+                    ----------------------------------------------------
+
+                    for i = #MS.pendingLoot, 1, -1 do
+                        local p = MS.pendingLoot[i]
+
+                        if p.source == "ENCOUNTER"
+                            and p.targetRun == targetRun
+                            and p.itemID == itemID
+                        then
+                            p.itemName = resolvedName
+                            break
+                        end
+                    end
+
+                    return
+                end
+
+                if attempt < 8 then
+                    C_Timer.After(0.4, function()
+                        RetryEncounterName(attempt + 1)
+                    end)
+                end
+            end
+
+            RetryEncounterName(1)
+        end
 
     elseif event == "CHAT_MSG_LOOT" then
         local message, playerName = ...
-        if not message then return end
+
+        if not message then
+            return
+        end
 
         local targetRun = GetLootTargetRun()
-        if not targetRun then return end
+        if not targetRun then
+            return
+        end
 
-        -- 1. Extract Hyperlink or Item Name from message
-        local itemLink = message:match("(|c%x+|Hitem:.-|h%[.-%]%|r)")
-        local itemName = message:match("%[(.-)%]")
-        if not itemLink and not itemName then return end
+        ----------------------------------------------------------------
+        -- Extract hyperlink and/or item name.
+        ----------------------------------------------------------------
 
-        -- 2. AUTO-RESOLVE: If chat only had plain text, attempt to fetch the full link from cache
+        local itemLink = message:match(
+            "(|c%x%x%x%x%x%x%x%x|Hitem:.-|h%[.-%]|h|r)"
+        )
+
+        local itemName =
+            message:match("%[(.-)%]")
+
+        if not itemLink and not itemName then
+            return
+        end
+
+        ----------------------------------------------------------------
+        -- Only a hyperlink literally contained in CHAT_MSG_LOOT is
+        -- authoritative.
+        ----------------------------------------------------------------
+
+        local isConfirmedLink = itemLink ~= nil
+
+        ----------------------------------------------------------------
+        -- If CHAT only supplied the item name, resolve it as a fallback.
+        -- This link remains UNCONFIRMED.
+        ----------------------------------------------------------------
+
         if not itemLink and itemName then
-            local _, resolvedLink = GetItemInfo(itemName)
+            local _, resolvedLink =
+                GetItemInfo(itemName)
+
             if resolvedLink then
                 itemLink = resolvedLink
             end
         end
 
-        -- 3. Extract quality color if itemLink is still unavailable
+        ----------------------------------------------------------------
+        -- Fallback chat color.
+        ----------------------------------------------------------------
+
         local qualityColor
+
         if not itemLink then
-            local hexColor = message:match("|c(%x%x%x%x%x%x%x%x)")
+            local hexColor =
+                message:match("|c(%x%x%x%x%x%x%x%x)")
+
             if hexColor then
-                local r = tonumber(hexColor:sub(3,4), 16) or 255
-                local g = tonumber(hexColor:sub(5,6), 16) or 255
-                local b = tonumber(hexColor:sub(7,8), 16) or 255
-                qualityColor = { r / 255, g / 255, b / 255 }
+                local r =
+                    tonumber(hexColor:sub(3, 4), 16) or 255
+
+                local g =
+                    tonumber(hexColor:sub(5, 6), 16) or 255
+
+                local b =
+                    tonumber(hexColor:sub(7, 8), 16) or 255
+
+                qualityColor = {
+                    r / 255,
+                    g / 255,
+                    b / 255
+                }
             end
         end
 
-        -- 4. Derive recipient
-        local recipient = message:match("|Hplayer:([^:|]+)")
-                       or message:match("^([^%[]+) receives loot:")
-                       or message:match("^([^%[]+) receives item:")
-                       or message:match("^([^%[]+) won:")
+        ----------------------------------------------------------------
+        -- Determine recipient.
+        ----------------------------------------------------------------
+
+        local recipient =
+            message:match("|Hplayer:([^:|]+)")
+            or message:match("^([^%[]+) receives loot:")
+            or message:match("^([^%[]+) receives item:")
+            or message:match("^([^%[]+) won:")
+
         if recipient then
-            recipient = recipient:gsub("^%s+", ""):gsub("%s+$", "")
+            recipient =
+                recipient:gsub("^%s+", "")
+                        :gsub("%s+$", "")
         end
-        if not recipient and (message:find("^You receive ") or message:find("^You won:")) then
+
+        if not recipient
+            and (
+                message:find("^You receive ")
+                or message:find("^You won:")
+            )
+        then
             recipient = UnitName("player")
         end
+
         if not recipient or recipient == "" then
-            recipient = playerName and playerName ~= "" and playerName or UnitName("player")
+            recipient =
+                playerName
+                and playerName ~= ""
+                and playerName
+                or UnitName("player")
         end
 
         local name = MS.ShortName(recipient)
-        if not targetRun.players[name] then return end
 
-        -- 5. Dispatch to TryResolveLoot
-        if itemLink then
-            -- Pass the full hyperlink as the item identifier
-            TryResolveLoot(targetRun, name, itemLink, itemName, true, qualityColor)
-        else
-            -- Plain text fallback
-            TryResolveLoot(targetRun, name, itemName, itemName, false, qualityColor)
-        end
-
-    elseif event == "UNIT_AURA" then
-        if not MS.inDungeon or not MS.currentRun then return end
-
-        local unit = ...
-        if not unit or not UnitExists(unit) then return end
-
-        -- We only care about enemy nameplates.
-        if not unit:find("^nameplate") then return end
-        if UnitIsFriend("player", unit) then return end
-
-        -- Use the public nameplate token as the tracker key. Enemy GUIDs are
-        -- secret in Midnight M+ and cannot be used to index addon tables.
-        local cast = _trackedEnemyCasts[unit]
-        if not cast or cast.stopped then return end
-
-        local now = GetTime()
-
-        -- If the cast has already naturally finished, don't associate a stun
-        -- with it.
-        if now >= (cast.endMS / 1000) - 0.10 then
+        if not targetRun.players[name] then
             return
         end
 
-        if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
+        ----------------------------------------------------------------
+        -- Record CHAT observation.
+        ----------------------------------------------------------------
 
-        -- We need to inspect all harmful auras because the stun may not be aura 1.
-        local stunOwner, stunSpellID
+        AddPendingChatLoot(
+            targetRun,
+            name,
+            itemName,
+            itemLink,
+            qualityColor
+        )
 
-        for auraIndex = 1, 40 do
-            local aura = C_UnitAuras.GetAuraDataByIndex(unit, auraIndex, "HARMFUL")
-            if not aura then break end
+        ----------------------------------------------------------------
+        -- If ENCOUNTER arrived first, use its authoritative link now.
+        ----------------------------------------------------------------
 
-            local spellID = aura.spellId
-            local spellName = aura.name
-            if IsTrackedStunAura(spellID, spellName) then
-                local sourceUnit = aura.sourceUnit
-                local owner = ResolveCCOwner(sourceUnit)
+        if itemName then
+            local pendingEncounter =
+                FindPendingEncounterLoot(
+                    targetRun,
+                    itemName
+                )
 
-                if MS.debugInterruptLogging then
-                    local sourceLabel = (sourceUnit and not IsSecret(sourceUnit))
-                        and sourceUnit or "unknown/secret"
-                    print("|cff00ccff[MythicScoreboard DEBUG]|r Stun aura "
-                        .. tostring(spellID) .. " on " .. unit
-                        .. "; source: " .. sourceLabel
-                        .. "; owner: " .. (owner or "unresolved"))
-                end
+            if pendingEncounter then
 
-                if owner then
-                    stunOwner = owner
-                    stunSpellID = spellID
-                    break
+                if pendingEncounter.itemLink then
+                    TryResolveLoot(
+                        targetRun,
+                        name,
+                        pendingEncounter.itemLink,
+                        itemName,
+                        true,
+                        qualityColor
+                    )
+
+                    return
+
+                elseif pendingEncounter.itemID then
+                    TryResolveLoot(
+                        targetRun,
+                        name,
+                        pendingEncounter.itemID,
+                        itemName,
+                        false,
+                        qualityColor
+                    )
+
+                    return
                 end
             end
         end
 
-        if not stunOwner then return end
-
-        -- We have seen a qualifying stun on an enemy that was actively casting.
+        ----------------------------------------------------------------
+        -- No ENCOUNTER result yet.
         --
-        -- Don't immediately count it: the cast has to actually disappear early.
-        if not cast.pendingStun then
-            cast.pendingStun = {
-                owner = stunOwner,
-                spellID = stunSpellID,
-                time = now,
-            }
+        -- Use CHAT as a fallback. If this is only a name-resolved link,
+        -- it remains unconfirmed and can later be replaced by the
+        -- authoritative ENCOUNTER link.
+        ----------------------------------------------------------------
+
+        if itemLink then
+            TryResolveLoot(
+                targetRun,
+                name,
+                itemLink,
+                itemName,
+                isConfirmedLink,
+                qualityColor
+            )
+        else
+            TryResolveLoot(
+                targetRun,
+                name,
+                itemName,
+                itemName,
+                false,
+                qualityColor
+            )
         end
+
+    -- elseif event == "UNIT_AURA" then
+    --     if not MS.inDungeon or not MS.currentRun then return end
+
+    --     local unit = ...
+    --     if not unit or not UnitExists(unit) then return end
+
+    --     -- We only care about enemy nameplates.
+    --     if not unit:find("^nameplate") then return end
+    --     if UnitIsFriend("player", unit) then return end
+
+    --     -- Use the public nameplate token as the tracker key. Enemy GUIDs are
+    --     -- secret in Midnight M+ and cannot be used to index addon tables.
+    --     local cast = _trackedEnemyCasts[unit]
+    --     if not cast or cast.stopped then return end
+
+    --     local now = GetTime()
+
+    --     -- If the cast has already naturally finished, don't associate a stun
+    --     -- with it.
+    --     if now >= (cast.endMS / 1000) - 0.10 then
+    --         return
+    --     end
+
+    --     if not (C_UnitAuras and C_UnitAuras.GetAuraDataByIndex) then return end
+
+    --     -- We need to inspect all harmful auras because the stun may not be aura 1.
+    --     local stunOwner, stunSpellID
+
+    --     for auraIndex = 1, 40 do
+    --         local aura = C_UnitAuras.GetAuraDataByIndex(unit, auraIndex, "HARMFUL")
+    --         if not aura then break end
+
+    --         local spellID = aura.spellId
+    --         local spellName = aura.name
+    --         if IsTrackedStunAura(spellID, spellName) then
+    --             local sourceUnit = aura.sourceUnit
+    --             local owner = ResolveCCOwner(sourceUnit)
+
+    --             if MS.debugInterruptLogging then
+    --                 local sourceLabel = (sourceUnit and not IsSecret(sourceUnit))
+    --                     and sourceUnit or "unknown/secret"
+    --                 print("|cff00ccff[MythicScoreboard DEBUG]|r Stun aura "
+    --                     .. tostring(spellID) .. " on " .. unit
+    --                     .. "; source: " .. sourceLabel
+    --                     .. "; owner: " .. (owner or "unresolved"))
+    --             end
+
+    --             if owner then
+    --                 stunOwner = owner
+    --                 stunSpellID = spellID
+    --                 break
+    --             end
+    --         end
+    --     end
+
+    --     if not stunOwner then return end
+
+    --     -- We have seen a qualifying stun on an enemy that was actively casting.
+    --     --
+    --     -- Don't immediately count it: the cast has to actually disappear early.
+    --     if not cast.pendingStun then
+    --         cast.pendingStun = {
+    --             owner = stunOwner,
+    --             spellID = stunSpellID,
+    --             time = now,
+    --         }
+    --     end
     end
 end)
 
@@ -1160,8 +1731,8 @@ C_Timer.NewTicker(0.1, function()
     if not MS.inDungeon then return end
 
     local ok, err = pcall(function()
-        ScanEnemyCasts()
-        CheckStunInterrupts()
+        --ScanEnemyCasts()
+        --CheckStunInterrupts()
     end)
 
     if not ok then
@@ -1182,3 +1753,490 @@ C_Timer.NewTicker(0.75, function()
         print("|cffff4444[MythicScoreboard]|r Death poll error: " .. tostring(err))
     end
 end)
+
+
+
+
+
+-- ============================================================
+-- TEMPORARY LOOT DEBUG FRAME
+-- Replace the previous temporary loot debug block with this.
+-- Remove this entire block when debugging is finished.
+-- ============================================================
+
+local MS_LootDebugFrame =
+    CreateFrame("Frame", "MS_LootDebugFrame", UIParent, "BackdropTemplate")
+
+MS_LootDebugFrame:SetSize(450, 500)
+MS_LootDebugFrame:SetPoint("CENTER")
+MS_LootDebugFrame:SetMovable(true)
+MS_LootDebugFrame:EnableMouse(true)
+MS_LootDebugFrame:RegisterForDrag("LeftButton")
+
+MS_LootDebugFrame:SetScript("OnDragStart", function(self)
+    self:StartMoving()
+end)
+
+MS_LootDebugFrame:SetScript("OnDragStop", function(self)
+    self:StopMovingOrSizing()
+end)
+
+MS_LootDebugFrame:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    edgeSize = 16,
+    insets = {
+        left = 4,
+        right = 4,
+        top = 4,
+        bottom = 4,
+    },
+})
+
+local title = MS_LootDebugFrame:CreateFontString(
+    nil,
+    "OVERLAY",
+    "GameFontNormal"
+)
+
+title:SetPoint("TOPLEFT", 12, -10)
+title:SetText("MythicScoreboard Loot Debug")
+
+-- ============================================================
+-- Stored debug lines
+-- ============================================================
+
+local debugLines = {}
+
+local function MS_LootDebugBuildText()
+    return table.concat(debugLines, "\n")
+end
+
+local debugOutput
+
+function MS_LootDebugPrint(...)
+    local parts = {}
+
+    for i = 1, select("#", ...) do
+        local value = select(i, ...)
+
+        if value == nil then
+            value = "nil"
+        end
+
+        parts[#parts + 1] = tostring(value)
+    end
+
+    local line = table.concat(parts, " ")
+
+    debugLines[#debugLines + 1] = line
+
+    debugOutput:AddMessage(line)
+
+    MS_LootDebugFrame:Show()
+end
+
+-- ============================================================
+-- Close button
+-- ============================================================
+
+local close = CreateFrame(
+    "Button",
+    nil,
+    MS_LootDebugFrame,
+    "UIPanelCloseButton"
+)
+
+close:SetPoint("TOPRIGHT", 2, 2)
+
+-- ============================================================
+-- Clear button
+-- ============================================================
+
+local clearButton = CreateFrame(
+    "Button",
+    nil,
+    MS_LootDebugFrame,
+    "UIPanelButtonTemplate"
+)
+
+clearButton:SetSize(80, 24)
+clearButton:SetPoint("TOPRIGHT", close, "TOPLEFT", -4, 0)
+clearButton:SetText("Clear")
+
+clearButton:SetScript("OnClick", function()
+    debugLines = {}
+    debugOutput:Clear()
+end)
+
+-- ============================================================
+-- Copy button
+-- ============================================================
+
+local copyButton = CreateFrame(
+    "Button",
+    nil,
+    MS_LootDebugFrame,
+    "UIPanelButtonTemplate"
+)
+
+copyButton:SetSize(80, 24)
+copyButton:SetPoint("TOPRIGHT", clearButton, "TOPLEFT", -4, 0)
+copyButton:SetText("Copy All")
+
+-- ============================================================
+-- Scroll frame
+-- ============================================================
+
+local scrollFrame = CreateFrame(
+    "ScrollFrame",
+    nil,
+    MS_LootDebugFrame,
+    "UIPanelScrollFrameTemplate"
+)
+
+scrollFrame:SetPoint("TOPLEFT", 12, -40)
+scrollFrame:SetPoint("BOTTOMRIGHT", -30, 12)
+
+-- Actual text area inside the scroll frame
+debugOutput = CreateFrame(
+    "ScrollingMessageFrame",
+    nil,
+    scrollFrame
+)
+
+debugOutput:SetWidth(830)
+debugOutput:SetHeight(430)
+
+debugOutput:SetFontObject(GameFontHighlightSmall)
+debugOutput:SetJustifyH("LEFT")
+debugOutput:SetFading(false)
+debugOutput:SetMaxLines(5000)
+debugOutput:SetInsertMode("BOTTOM")
+debugOutput:SetHyperlinksEnabled(true)
+
+scrollFrame:SetScrollChild(debugOutput)
+
+-- ============================================================
+-- Mouse wheel scrolling
+-- ============================================================
+
+debugOutput:EnableMouse(true)
+debugOutput:EnableMouseWheel(true)
+
+debugOutput:SetScript("OnMouseWheel", function(self, delta)
+
+    local current = scrollFrame:GetVerticalScroll()
+    local range = scrollFrame:GetVerticalScrollRange()
+
+    local step = 40
+
+    if delta > 0 then
+        scrollFrame:SetVerticalScroll(
+            math.max(0, current - step)
+        )
+    else
+        scrollFrame:SetVerticalScroll(
+            math.min(range, current + step)
+        )
+    end
+end)
+
+-- Also allow the scroll frame itself to receive the wheel.
+scrollFrame:EnableMouseWheel(true)
+
+scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+
+    local current = self:GetVerticalScroll()
+    local range = self:GetVerticalScrollRange()
+
+    local step = 40
+
+    if delta > 0 then
+        self:SetVerticalScroll(
+            math.max(0, current - step)
+        )
+    else
+        self:SetVerticalScroll(
+            math.min(range, current + step)
+        )
+    end
+end)
+
+-- ============================================================
+-- Hyperlink clicking
+-- ============================================================
+
+debugOutput:SetScript("OnHyperlinkClick", function(
+    self,
+    link,
+    text,
+    button
+)
+    if ChatFrameUtil
+        and ChatFrameUtil.HandleHyperlink
+    then
+        ChatFrameUtil.HandleHyperlink(
+            self,
+            link,
+            text,
+            button
+        )
+    end
+end)
+
+-- ============================================================
+-- Copy window
+-- ============================================================
+
+local copyFrame =
+    CreateFrame("Frame", "MS_LootDebugCopyFrame", UIParent, "BackdropTemplate")
+
+copyFrame:SetSize(850, 500)
+copyFrame:SetPoint("CENTER")
+copyFrame:SetFrameStrata("DIALOG")
+
+copyFrame:SetBackdrop({
+    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    edgeSize = 16,
+    insets = {
+        left = 4,
+        right = 4,
+        top = 4,
+        bottom = 4,
+    },
+})
+
+copyFrame:Hide()
+
+local copyTitle = copyFrame:CreateFontString(
+    nil,
+    "OVERLAY",
+    "GameFontNormal"
+)
+
+copyTitle:SetPoint("TOPLEFT", 12, -10)
+copyTitle:SetText("MythicScoreboard Loot Debug — Copy")
+
+local copyClose = CreateFrame(
+    "Button",
+    nil,
+    copyFrame,
+    "UIPanelCloseButton"
+)
+
+copyClose:SetPoint("TOPRIGHT", 2, 2)
+
+local copyInstructions = copyFrame:CreateFontString(
+    nil,
+    "OVERLAY",
+    "GameFontHighlightSmall"
+)
+
+copyInstructions:SetPoint("TOPLEFT", 12, -35)
+copyInstructions:SetText(
+    "Click inside the text, press Ctrl+A, then Ctrl+C."
+)
+
+local copyScroll =
+    CreateFrame(
+        "ScrollFrame",
+        nil,
+        copyFrame,
+        "UIPanelScrollFrameTemplate"
+    )
+
+copyScroll:SetPoint("TOPLEFT", 12, -60)
+copyScroll:SetPoint("BOTTOMRIGHT", -30, 12)
+
+local copyEditBox = CreateFrame(
+    "EditBox",
+    nil,
+    copyScroll
+)
+
+copyEditBox:SetMultiLine(true)
+copyEditBox:SetAutoFocus(false)
+copyEditBox:SetFontObject(ChatFontNormal)
+copyEditBox:SetJustifyH("LEFT")
+copyEditBox:SetJustifyV("TOP")
+copyEditBox:SetWidth(790)
+copyEditBox:SetTextColor(1, 1, 1, 1)
+
+copyScroll:SetScrollChild(copyEditBox)
+
+copyButton:SetScript("OnClick", function()
+
+    copyEditBox:SetText(
+        MS_LootDebugBuildText()
+    )
+
+    copyFrame:Show()
+
+    copyEditBox:SetFocus()
+    copyEditBox:HighlightText()
+end)
+
+-- ============================================================
+-- Slash commands
+-- ============================================================
+
+SLASH_MSLOOTDEBUG1 = "/mslootdebug"
+
+SlashCmdList.MSLOOTDEBUG = function()
+
+    if MS_LootDebugFrame:IsShown() then
+        MS_LootDebugFrame:Hide()
+    else
+        MS_LootDebugFrame:Show()
+    end
+end
+
+SLASH_MSLOOTDEBUGCLEAR1 = "/mslootdebugclear"
+
+SlashCmdList.MSLOOTDEBUGCLEAR = function()
+
+    debugLines = {}
+    debugOutput:Clear()
+end
+
+-- ============================================================
+-- Event capture
+-- ============================================================
+
+local eventFrame = CreateFrame("Frame")
+
+eventFrame:RegisterEvent("CHAT_MSG_LOOT")
+eventFrame:RegisterEvent("ENCOUNTER_LOOT_RECEIVED")
+
+eventFrame:SetScript("OnEvent", function(self, event, ...)
+
+    if event == "CHAT_MSG_LOOT" then
+
+        local message, playerName = ...
+
+        local isItemLoot =
+            message
+            and (
+                message:find("^You receive loot:")
+                or message:find("^You won:")
+                or message:find(" receives loot:")
+                or message:find(" won:")
+            )
+
+        if not isItemLoot then
+            return
+        end
+
+        local itemLink = message:match(
+            "(|c%x%x%x%x%x%x%x%x|Hitem:.-|h%[.-%]|h|r)"
+        )
+
+        local itemName = message:match("%[(.-)%]")
+
+        MS_LootDebugPrint(
+            "|cffff9900========== CHAT_MSG_LOOT =========="
+        )
+
+        MS_LootDebugPrint(
+            "Message:",
+            message
+        )
+
+        MS_LootDebugPrint(
+            "Player arg:",
+            playerName or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Extracted link:",
+            itemLink or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Extracted name:",
+            itemName or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Full event arguments:"
+        )
+
+        for i = 1, 10 do
+
+            local value = select(i, ...)
+
+            if value ~= nil then
+                MS_LootDebugPrint(
+                    "  arg" .. i .. ":",
+                    value
+                )
+            end
+        end
+
+        MS_LootDebugPrint(
+            "|cffff9900================================"
+        )
+
+    elseif event == "ENCOUNTER_LOOT_RECEIVED" then
+
+        local encounterID,
+              itemID,
+              itemLink,
+              quantity,
+              playerName = ...
+
+        MS_LootDebugPrint(
+            "|cff00ff00====== ENCOUNTER_LOOT_RECEIVED ======"
+        )
+
+        MS_LootDebugPrint(
+            "Encounter ID:",
+            encounterID or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Item ID:",
+            itemID or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Item Link:",
+            itemLink or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Quantity:",
+            quantity or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Player:",
+            playerName or "nil"
+        )
+
+        MS_LootDebugPrint(
+            "Full event arguments:"
+        )
+
+        for i = 1, 10 do
+
+            local value = select(i, ...)
+
+            if value ~= nil then
+                MS_LootDebugPrint(
+                    "  arg" .. i .. ":",
+                    value
+                )
+            end
+        end
+
+        MS_LootDebugPrint(
+            "|cff00ff00========================================"
+        )
+    end
+end)
+
+MS_LootDebugFrame:Hide()
+copyFrame:Hide()
