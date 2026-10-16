@@ -35,17 +35,6 @@ local CLASS_COLORS = {
     UNKNOWN = {r = 0.70, g = 0.70, b = 0.70}
 }
 
-local ITEM_QUALITY_COLORS = {
-    [0] = {r = 0.62, g = 0.62, b = 0.62}, -- Poor (Junk)
-    [1] = {r = 1.00, g = 1.00, b = 1.00}, -- Common (White)
-    [2] = {r = 0.12, g = 1.00, b = 0.00}, -- Uncommon (Green)
-    [3] = {r = 0.00, g = 0.44, b = 0.87}, -- Rare (Blue)
-    [4] = {r = 0.64, g = 0.21, b = 0.93}, -- Epic (Purple)
-    [5] = {r = 1.00, g = 0.50, b = 0.00}, -- Legendary (Orange)
-    [6] = {r = 0.90, g = 0.80, b = 0.50}, -- Artifact (Gold)
-    [7] = {r = 0.00, g = 0.80, b = 1.00} -- Heirloom (Light Blue)
-}
-
 -- ---------------------------------------------------------------------------
 -- Shared utilities
 -- ---------------------------------------------------------------------------
@@ -2142,7 +2131,6 @@ local COL_SORT_VALUES = {
         return (p.hps or 0) > 0 and p.hps or (p.healingDone or 0)
     end,
     interrupts = function(p) return p.interrupts or 0 end,
-    stunInterrupts = function(p) return p.stunInterrupts or 0 end,
     dispels = function(p) return p.dispels or 0 end
 }
 
@@ -3091,6 +3079,13 @@ local function AcquireRow(parent)
             )
 
             if ok and GameTooltip:NumLines() > 0 then
+                -- Stored loot is Hero track (Epic); Blizzard's title can
+                -- still be white for legacy items with a track bonus.
+                local title = _G["GameTooltipTextLeft1"]
+                if title and (p.lootQuality or 0) >= Enum.ItemQuality.Epic then
+                    local qr, qg, qb = C_Item.GetItemQualityColor(p.lootQuality)
+                    title:SetTextColor(qr, qg, qb)
+                end
                 GameTooltip:Show()
                 return
             else
@@ -3210,14 +3205,10 @@ local COL_RENDERERS = {
     end,
     interrupts = function(p)
         local interrupts = p.interrupts or 0
-        local stunInterrupts = p.stunInterrupts or 0
 
         local label = tostring(interrupts)
-        if stunInterrupts > 0 then
-            label = label .. " (" .. tostring(stunInterrupts) .. ")"
-        end
 
-        if interrupts > 0 or stunInterrupts > 0 then
+        if interrupts > 0 then
             return label, C.cyan[1], C.cyan[2], C.cyan[3]
         end
 
@@ -3659,7 +3650,7 @@ function MS:_DoRefreshOverview()
                 r, g, b = p.lootQualityColor[1], p.lootQualityColor[2],
                           p.lootQualityColor[3]
             elseif p.lootItemLink then
-                local quality = select(3, C_Item.GetItemInfo(p.lootItemLink))
+                local quality = C_Item.GetItemQualityByID(p.lootItemLink)
                 if quality then
                     r, g, b = C_Item.GetItemQualityColor(quality)
                 end

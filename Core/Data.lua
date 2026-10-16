@@ -130,7 +130,6 @@ local function NewPlayerStats(name, classToken, guid)
         hps                  = 0,
         interrupts           = 0,
         interruptEvents      = {},
-        stunInterrupts       = 0,
         dispels              = 0,
         deaths               = 0,
         deathEvents          = {},
@@ -145,7 +144,6 @@ MS.currentRun      = nil
 MS.inDungeon       = false
 MS.scoreCache      = {}
 MS.NewPlayerStats  = NewPlayerStats
-MS.debugInterruptLogging = false -- Temporary stun-tracker diagnostic.
 
 local VALID_CLASS = {
     WARRIOR=true, PALADIN=true,  HUNTER=true,  ROGUE=true,   PRIEST=true,
@@ -153,23 +151,6 @@ local VALID_CLASS = {
     DRUID=true, DEMONHUNTER=true, EVOKER=true,
 }
 MS.ValidClass = VALID_CLASS
-
--- Prints only when a player's tracked interrupt totals change, so this remains
--- useful during a run without spamming chat on every damage-meter poll.
-function MS:DebugLogInterruptCounts()
-    if not self.debugInterruptLogging or not self.currentRun then return end
-    self._debugInterruptCounts = self._debugInterruptCounts or {}
-    for name, p in pairs(self.currentRun.players) do
-        local interrupts = p.interrupts or 0
-        local stuns      = p.stunInterrupts or 0
-        local previous   = self._debugInterruptCounts[name]
-        if not previous or previous.interrupts ~= interrupts or previous.stuns ~= stuns then
-            self._debugInterruptCounts[name] = { interrupts = interrupts, stuns = stuns }
-            print(_fmt("|cff00ccff[MythicScoreboard DEBUG]|r %s -- Interrupts: %d, Stun interrupts: %d",
-                name, interrupts, stuns))
-        end
-    end
-end
 
 local SYNTH_INTERRUPT_MIN_WINDOW = 2
 
@@ -589,7 +570,6 @@ function MS:SnapshotFromDamageMeter()
     applyField(5, "interrupts"); applyField(6, "dispels")
 
     self:_BackfillSyntheticInterrupts()
-    self:DebugLogInterruptCounts()
 
     local deathSrc = getSources(9)
     if deathSrc then
