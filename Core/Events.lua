@@ -239,8 +239,34 @@ local function IsItemBindOnEquip(itemLink)
 end
 
 
+local HERO_TRACK_NAMES = {
+    "Héroe",   -- esES / esMX
+    "Heroe",
+    "Held",    -- deDE
+    "Héros",   -- frFR
+    "Eroe",    -- itIT
+    "Herói",   -- ptBR
+    "Герой",   -- ruRU
+    "영웅",     -- koKR
+    "英雄",     -- zhCN / zhTW
+}
+
+-- Locale-independent Hero track ID from C_Item.GetItemUpgradeInfo. Unverified:
+-- fill it in from the "Upgrade track ID" line in /mslootdebug on a Hero item.
+local HERO_TRACK_STRING_ID = nil
+
 local function GetLootTrack(itemLink)
-    if not itemLink or not C_TooltipInfo or not C_TooltipInfo.GetHyperlink then
+    if not itemLink then return nil end
+
+    if C_Item and C_Item.GetItemUpgradeInfo then
+        local trackStringID, trackString = C_Item.GetItemUpgradeInfo(itemLink)
+        MS_LootDebugPrint("Upgrade track ID:", trackStringID or "nil", trackString or "nil")
+        if HERO_TRACK_STRING_ID and trackStringID == HERO_TRACK_STRING_ID then
+            return "Hero"
+        end
+    end
+
+    if not C_TooltipInfo or not C_TooltipInfo.GetHyperlink then
         return nil
     end
 
@@ -255,6 +281,13 @@ local function GetLootTrack(itemLink)
             local text = line.leftText or line.rightText
 
             if text then
+                -- Localized names of the Hero track (the tooltip is client-language).
+                for _, heroName in ipairs(HERO_TRACK_NAMES) do
+                    if text:find(heroName, 1, true) then
+                        return "Hero"
+                    end
+                end
+
                 text = text:lower()
 
                 if text:find("hero", 1, true) then
